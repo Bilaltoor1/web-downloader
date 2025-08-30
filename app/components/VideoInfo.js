@@ -11,7 +11,7 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [downloadSubtitles, setDownloadSubtitles] = useState(false);
-
+//    bilal
   // Mock video formats - replace with actual data from yt-dlp
   const videoFormats = videoInfo.formats?.videoFormats || [
     { id: '137+140', quality: '1080p', ext: 'mp4', size: '50MB', vcodec: 'avc1', selected: true },
@@ -44,20 +44,51 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
 
   // Handle download with browser's download functionality
   const handleDownload = async (type) => {
+    // Get the format ID for the selected format
+    let formatId = 'best';
+    
+    if (type === 'video' && selectedVideoFormat) {
+      // Check if we have processed formats from the API
+      if (videoInfo.formats && videoInfo.formats.videoFormats) {
+        const selectedFormat = videoInfo.formats.videoFormats.find(f => 
+          f.id === selectedVideoFormat
+        );
+        if (selectedFormat) {
+          formatId = selectedFormat.id;
+        }
+      } else {
+        // Fallback to the selected format ID directly
+        formatId = selectedVideoFormat;
+      }
+    } else if (type === 'audio' && selectedAudioFormat) {
+      // Check if we have processed formats from the API
+      if (videoInfo.formats && videoInfo.formats.audioFormats) {
+        const selectedFormat = videoInfo.formats.audioFormats.find(f => 
+          f.id === selectedAudioFormat
+        );
+        if (selectedFormat) {
+          formatId = selectedFormat.id;
+        }
+      } else if (selectedAudioFormat === 'bestaudio') {
+        formatId = 'bestaudio';
+      } else {
+        // Fallback to the selected format ID directly
+        formatId = selectedAudioFormat;
+      }
+    }
+    
+    console.log('Downloading with format:', formatId);
+
     const downloadId = onDownload({
       title: videoInfo.title,
       type: type,
       thumbnail: videoInfo.thumbnail,
-      format: type === 'video' ? selectedVideoFormat : selectedAudioFormat,
-      audioFormat: type === 'video' ? selectedAudioForVideo : null,
-      startTime,
-      endTime,
-      subtitles: downloadSubtitles,
+      formatId: formatId,
     });
 
-    // Simulate download process
+    // Start download process
     try {
-      // Get download URL from your API
+      // Get download URL from API
       const response = await fetch('/api/download', {
         method: 'POST',
         headers: {
@@ -65,17 +96,14 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
         },
         body: JSON.stringify({
           url: videoInfo.url,
-          format: type === 'video' ? selectedVideoFormat : selectedAudioFormat,
-          audioFormat: type === 'video' ? selectedAudioForVideo : null,
-          type,
-          startTime,
-          endTime,
-          subtitles: downloadSubtitles,
+          formatId: formatId,
+          type: type,
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Download failed');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Download failed');
       }
 
       const blob = await response.blob();
@@ -85,10 +113,19 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
       const link = document.createElement('a');
       link.href = downloadUrl;
       
-      // Generate filename
-      const ext = type === 'video' ? 'mp4' : 'm4a';
-      const filename = `${videoInfo.title.replace(/[^a-zA-Z0-9]/g, '_')}.${ext}`;
+      // Try to get filename from response headers
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `${videoInfo.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.mp4`;
+      
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+      
       link.download = filename;
+      console.log('Downloading file:', filename);
       
       // Trigger download
       document.body.appendChild(link);

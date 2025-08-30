@@ -23,6 +23,7 @@ export default function RootLayout({ children }) {
     <html lang="en" suppressHydrationWarning>
       <body
         className={`${ubuntu.variable} ${jetBrains.variable} antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>

@@ -6,15 +6,9 @@ import os from 'os';
 
 export async function POST(request) {
   try {
-    const { 
-      url, 
-      format, 
-      audioFormat, 
-      type, 
-      startTime, 
-      endTime, 
-      subtitles 
-    } = await request.json();
+    const { url, formatId, type } = await request.json();
+    
+    console.log('Download request:', { url, formatId, type });
     
     if (!url) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
@@ -24,124 +18,158 @@ export async function POST(request) {
     const tempDir = path.join(os.tmpdir(), 'ytdownloader');
     await fs.mkdir(tempDir, { recursive: true });
 
-    // Generate filename
+    // Generate a simple filename template
     const timestamp = Date.now();
-    const ext = type === 'video' ? 'mp4' : 'm4a';
-    const filename = `download_${timestamp}.${ext}`;
-    const outputPath = path.join(tempDir, filename);
-
-    // Build yt-dlp arguments
-    const args = buildYtDlpArgs({
-      url,
-      format,
-      audioFormat,
-      type,
-      startTime,
-      endTime,
-      subtitles,
-      outputPath
-    });
-
-    // Start download
+    const outputTemplate = path.join(tempDir, `download_${timestamp}.%(ext)s`);
+    
+    console.log('Output template:', outputTemplate);
+    
+    // Build yt-dlp arguments based on type
+    const args = [url, '-o', outputTemplate];
+    
+    if (type === 'audio') {
+      // For audio extraction
+      args.push('-x');
+      args.push('--audio-format', 'mp3');
+      args.push('-f', 'bestaudio');
+    } else {
+      // For video - use single format to avoid FFmpeg merge requirement
+      if (formatId && formatId !== 'best') {
+        // Extract just the video format ID (before any +)
+        const videoFormatId = formatId.split('+')[0];
+        console.log('Using video format:', videoFormatId);
+        args.push('-f', `${videoFormatId}/best[ext=mp4]/best`);
+      } else {
+        // Default to best quality single format
+        args.push('-f', 'best[ext=mp4]/best');
+      }
+    }
+    
+    // Add safety options
+    args.push('--no-warnings');
+    args.push('--no-playlist');
+    args.push('--no-check-certificate');
+    
+    console.log('yt-dlp command:', 'yt-dlp', args.join(' '));
+    
+    // Download the video
     const downloadedFile = await downloadVideo(args);
+    console.log('Download completed:', downloadedFile);
     
     // Read the file and return as blob
     const fileBuffer = await fs.readFile(downloadedFile);
+    const stats = await fs.stat(downloadedFile);
+    
+    // Get file extension and set appropriate headers
+    const ext = path.extname(downloadedFile).toLowerCase();
+    let contentType = 'application/octet-stream';
+    let filename = `download_${timestamp}${ext}`;
+    
+    if (ext === '.mp4') {
+      contentType = 'video/mp4';
+      filename = `video_${timestamp}.mp4`;
+    } else if (ext === '.webm') {
+      contentType = 'video/webm';
+      filename = `video_${timestamp}.webm`;
+    } else if (ext === '.m4a') {
+      contentType = 'audio/mp4';
+      filename = `audio_${timestamp}.m4a`;
+    } else if (ext === '.mp3') {
+      contentType = 'audio/mpeg';
+      filename = `audio_${timestamp}.mp3`;
+    }
+    
+    console.log('Serving file:', { filename, contentType, size: stats.size });
     
     // Clean up temp file
-    await fs.unlink(downloadedFile).catch(() => {}); // Ignore errors
+    await fs.unlink(downloadedFile).catch(err => {
+      console.error('Cleanup error:', err);
+    });
     
     // Return the file as download
     return new Response(fileBuffer, {
       headers: {
-        'Content-Type': type === 'video' ? 'video/mp4' : 'audio/mp4',
+        'Content-Type': contentType,
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': fileBuffer.length.toString(),
+        'Cache-Control': 'no-cache',
       },
     });
     
   } catch (error) {
     console.error('Download error:', error);
     return NextResponse.json(
-      { error: 'Download failed' },
+      { error: `Download failed: ${error.message}` },
       { status: 500 }
     );
   }
 }
 
-function buildYtDlpArgs({ url, format, audioFormat, type, startTime, endTime, subtitles, outputPath }) {
-  const args = [];
-  
-  // Format selection
-  if (type === 'video') {
-    if (audioFormat && audioFormat !== 'none') {
-      args.push('-f', `${format}+${audioFormat}`);
-    } else {
-      args.push('-f', format);
-    }
-  } else {
-    args.push('-x'); // Extract audio
-    args.push('--audio-format', format.split('|')[1] || 'm4a');
-    args.push('-f', format);
-  }
-  
-  // Time range
-  if (startTime) {
-    args.push('--download-sections', `*${startTime}-${endTime || ''}`);
-  }
-  
-  // Subtitles
-  if (subtitles) {
-    args.push('--write-sub');
-    args.push('--write-auto-sub');
-  }
-  
-  // Output
-  args.push('-o', outputPath);
-  
-  // Other options
-  args.push('--no-playlist');
-  args.push('--no-check-certificate');
-  
-  // URL
-  args.push(url);
-  
-  return args;
-}
-
 function downloadVideo(args) {
   return new Promise((resolve, reject) => {
+    console.log('Running yt-dlp with args:', args.join(' '));
+    
     const ytdlp = spawn('yt-dlp', args);
     
     let outputPath = '';
+    let hasError = false;
     
     ytdlp.stdout.on('data', (data) => {
       const output = data.toString();
+      console.log('yt-dlp stdout:', output);
+      
       // Parse output to get actual filename
-      const match = output.match(/\[download\] Destination: (.+)/);
-      if (match) {
-        outputPath = match[1];
+      const destinationMatch = output.match(/\[download\] Destination: (.+)/);
+      const alreadyMatch = output.match(/\[download\] (.+) has already been downloaded/);
+      
+      if (destinationMatch) {
+        outputPath = destinationMatch[1].trim();
+      } else if (alreadyMatch) {
+        outputPath = alreadyMatch[1].trim();
       }
     });
     
     ytdlp.stderr.on('data', (data) => {
-      console.error('yt-dlp stderr:', data.toString());
+      const error = data.toString();
+      console.log('yt-dlp stderr:', error);
+      
+      // Only treat actual errors as errors, not warnings
+      if (error.includes('ERROR:')) {
+        hasError = true;
+      }
     });
     
     ytdlp.on('close', (code) => {
-      if (code === 0) {
+      console.log(`yt-dlp process closed with code: ${code}`);
+      
+      if (code === 0 && !hasError) {
         // Find the downloaded file
         if (outputPath && require('fs').existsSync(outputPath)) {
+          console.log('Found downloaded file:', outputPath);
           resolve(outputPath);
         } else {
           // Try to find the file in the temp directory
           const tempDir = path.dirname(args[args.indexOf('-o') + 1]);
-          const files = require('fs').readdirSync(tempDir);
-          const downloadedFile = files.find(f => f.startsWith('download_'));
-          if (downloadedFile) {
-            resolve(path.join(tempDir, downloadedFile));
-          } else {
-            reject(new Error('Downloaded file not found'));
+          console.log('Looking for files in:', tempDir);
+          
+          try {
+            const files = require('fs').readdirSync(tempDir);
+            console.log('Files in temp dir:', files);
+            
+            const downloadedFile = files.find(f => 
+              f.startsWith('download_') && 
+              (f.endsWith('.mp4') || f.endsWith('.m4a') || f.endsWith('.webm') || f.endsWith('.mkv'))
+            );
+            
+            if (downloadedFile) {
+              const fullPath = path.join(tempDir, downloadedFile);
+              console.log('Found downloaded file:', fullPath);
+              resolve(fullPath);
+            } else {
+              reject(new Error('Downloaded file not found'));
+            }
+          } catch (err) {
+            reject(new Error(`Error reading temp directory: ${err.message}`));
           }
         }
       } else {
@@ -150,6 +178,7 @@ function downloadVideo(args) {
     });
     
     ytdlp.on('error', (error) => {
+      console.error('yt-dlp spawn error:', error);
       reject(error);
     });
   });

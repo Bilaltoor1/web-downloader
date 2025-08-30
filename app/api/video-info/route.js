@@ -9,14 +9,20 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
     }
 
+    // Validate URL format - be more lenient and let yt-dlp handle validation
+    const cleanUrl = url.trim();
+    if (!cleanUrl || cleanUrl.length < 3) {
+      return NextResponse.json({ error: 'Invalid URL or video ID' }, { status: 400 });
+    }
+
     // Use yt-dlp to get video information
-    const videoInfo = await getVideoInfo(url);
+    const videoInfo = await getVideoInfo(cleanUrl);
     
     return NextResponse.json(videoInfo);
   } catch (error) {
     console.error('Error fetching video info:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch video information' },
+      { error: 'Failed to fetch video information: ' + error.message },
       { status: 500 }
     );
   }
@@ -28,6 +34,7 @@ function getVideoInfo(url) {
       '--dump-json',
       '--no-playlist',
       '--no-check-certificate',
+      '--no-warnings',
       url
     ]);
 
@@ -35,21 +42,36 @@ function getVideoInfo(url) {
     let errorOutput = '';
 
     ytdlp.stdout.on('data', (data) => {
-      output += data.toString();
+      const chunk = data.toString();
+      // Filter out non-JSON output
+      if (chunk.includes('{') || output.length > 0) {
+        output += chunk;
+      }
     });
 
     ytdlp.stderr.on('data', (data) => {
-      errorOutput += data.toString();
+      const chunk = data.toString();
+      // Only capture actual errors, not warnings
+      if (chunk.includes('ERROR:')) {
+        errorOutput += chunk;
+      }
     });
 
     ytdlp.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`yt-dlp failed: ${errorOutput}`));
+        reject(new Error(`yt-dlp failed: ${errorOutput || 'Unknown error'}`));
         return;
       }
 
       try {
-        const videoData = JSON.parse(output);
+        // Find the JSON part of the output
+        const jsonMatch = output.match(/\{.*\}/s);
+        if (!jsonMatch) {
+          reject(new Error('No valid JSON found in yt-dlp output'));
+          return;
+        }
+
+        const videoData = JSON.parse(jsonMatch[0]);
         
         // Process formats to match our frontend expectations
         const processedFormats = {
@@ -58,9 +80,9 @@ function getVideoInfo(url) {
         };
 
         if (videoData.formats) {
-          // Process video formats
+          // Process video formats (with video codec and height)
           const videoFormats = videoData.formats.filter(f => 
-            f.vcodec && f.vcodec !== 'none' && f.height
+            f.vcodec && f.vcodec !== 'none' && f.height && f.height > 0
           );
           
           videoFormats.forEach(format => {
@@ -72,13 +94,13 @@ function getVideoInfo(url) {
               quality,
               ext: format.ext,
               size,
-              vcodec: format.vcodec,
+              vcodec: format.vcodec.split('.')[0], // Simplify codec name
               filesize: format.filesize,
               selected: format.height === 1080 // Default to 1080p
             });
           });
 
-          // Process audio formats
+          // Process audio formats (audio only)
           const audioFormats = videoData.formats.filter(f => 
             f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none')
           );
@@ -88,10 +110,10 @@ function getVideoInfo(url) {
             
             processedFormats.audioFormats.push({
               id: format.format_id,
-              quality: format.format_note || 'Unknown quality',
+              quality: format.format_note || format.abr ? `${format.abr}kbps` : 'Unknown quality',
               ext: format.ext === 'webm' ? 'opus' : format.ext,
               size,
-              note: format.format_note || 'Unknown quality'
+              note: format.format_note || `${format.abr || 'Unknown'}kbps`
             });
           });
         }
@@ -103,6 +125,12 @@ function getVideoInfo(url) {
           return bHeight - aHeight; // Descending order
         });
 
+        processedFormats.audioFormats.sort((a, b) => {
+          const aKbps = parseInt(a.note) || 0;
+          const bKbps = parseInt(b.note) || 0;
+          return bKbps - aKbps; // Descending order
+        });
+
         const result = {
           title: videoData.title || 'Unknown Title',
           thumbnail: videoData.thumbnail || null,
@@ -111,7 +139,9 @@ function getVideoInfo(url) {
           view_count: videoData.view_count || 0,
           url: videoData.webpage_url || url,
           extractor: videoData.extractor_key || 'Unknown',
-          formats: processedFormats
+          formats: processedFormats,
+          // Also include raw formats for compatibility
+          rawFormats: videoData.formats || []
         };
 
         resolve(result);

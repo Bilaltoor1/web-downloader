@@ -60,13 +60,20 @@ export default function VideoDownloader() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch video information');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to fetch video information');
       }
 
       const data = await response.json();
+      
+      // Validate the response structure
+      if (!data || !data.title) {
+        throw new Error('Invalid video data received');
+      }
+      
       setVideoInfo(data);
     } catch (err) {
-      setError('Some error has occurred. Check your network and use correct URL');
+      setError(err.message || 'Some error has occurred. Check your network and use correct URL');
       console.error('Error fetching video info:', err);
     } finally {
       setLoading(false);
