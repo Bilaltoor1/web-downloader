@@ -1,5 +1,17 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
+import path from 'path';
+import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
+
+function getSpawnEnv() {
+  const bins = [];
+  if (ffmpegStatic) bins.push(path.dirname(ffmpegStatic));
+  if (ffprobeStatic && ffprobeStatic.path) bins.push(path.dirname(ffprobeStatic.path));
+  const delim = path.delimiter;
+  const extra = bins.join(delim);
+  return { ...process.env, PATH: extra ? `${extra}${delim}${process.env.PATH || ''}` : process.env.PATH };
+}
 
 export async function POST(request) {
   try {
@@ -30,13 +42,15 @@ export async function POST(request) {
 
 function getVideoInfo(url) {
   return new Promise((resolve, reject) => {
-    const ytdlp = spawn('yt-dlp', [
+    const args = [
       '--dump-json',
       '--no-playlist',
       '--no-check-certificate',
       '--no-warnings',
+      '--ignore-config',
       url
-    ]);
+    ];
+    const ytdlp = spawn('yt-dlp', args, { env: getSpawnEnv() });
 
     let output = '';
     let errorOutput = '';

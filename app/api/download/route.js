@@ -3,6 +3,17 @@ import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
+
+function getSpawnEnv() {
+  const bins = [];
+  if (ffmpegStatic) bins.push(path.dirname(ffmpegStatic));
+  if (ffprobeStatic && ffprobeStatic.path) bins.push(path.dirname(ffprobeStatic.path));
+  const delim = path.delimiter;
+  const extra = bins.join(delim);
+  return { ...process.env, PATH: extra ? `${extra}${delim}${process.env.PATH || ''}` : process.env.PATH };
+}
 
 export async function POST(request) {
   try {
@@ -25,13 +36,11 @@ export async function POST(request) {
     console.log('Output template:', outputTemplate);
     
     // Build yt-dlp arguments based on type
-    const args = [url, '-o', outputTemplate];
+  const args = [url, '-o', outputTemplate];
     
     if (type === 'audio') {
-      // For audio extraction
-      args.push('-x');
-      args.push('--audio-format', 'mp3');
-      args.push('-f', 'bestaudio');
+      // Audio only (no postprocessing, let browser save the native stream)
+      args.push('-f', 'bestaudio/best');
     } else {
       // For video - use single format to avoid FFmpeg merge requirement
       if (formatId && formatId !== 'best') {
@@ -46,9 +55,13 @@ export async function POST(request) {
     }
     
     // Add safety options
-    args.push('--no-warnings');
-    args.push('--no-playlist');
-    args.push('--no-check-certificate');
+  args.push('--no-warnings');
+  args.push('--no-playlist');
+  args.push('--no-check-certificate');
+  args.push('--ignore-config');
+    if (ffmpegStatic) {
+      args.push('--ffmpeg-location', path.dirname(ffmpegStatic));
+    }
     
     console.log('yt-dlp command:', 'yt-dlp', args.join(' '));
     
@@ -109,7 +122,7 @@ function downloadVideo(args) {
   return new Promise((resolve, reject) => {
     console.log('Running yt-dlp with args:', args.join(' '));
     
-    const ytdlp = spawn('yt-dlp', args);
+  const ytdlp = spawn('yt-dlp', args, { env: getSpawnEnv() });
     
     let outputPath = '';
     let hasError = false;

@@ -6,6 +6,7 @@ export default function DownloadList({ downloads, onRemove, onUpdate }) {
       case 'downloading':
         return 'text-blue-400';
       case 'completed':
+      case 'saved':
         return 'text-green-400';
       case 'error':
         return 'text-red-400';
@@ -16,10 +17,20 @@ export default function DownloadList({ downloads, onRemove, onUpdate }) {
 
   const getStatusText = (download) => {
     switch (download.status) {
+      case 'starting':
+        return 'Starting download...';
       case 'downloading':
         return download.progress > 0 ? `${download.progress}%` : 'Preparing...';
+      case 'downloading_video':
+        return `Downloading video... ${download.progress}%`;
+      case 'downloading_audio':
+        return `Downloading audio... ${download.progress}%`;
+      case 'merging':
+        return `Merging video and audio... ${download.progress}%`;
       case 'completed':
-        return 'File saved successfully';
+        return 'Download completed';
+      case 'saved':
+        return 'File saved to downloads';
       case 'error':
         return download.error || 'Download failed';
       default:
@@ -58,7 +69,10 @@ export default function DownloadList({ downloads, onRemove, onUpdate }) {
               </h3>
               
               {/* Progress Bar */}
-              {download.status === 'downloading' && download.progress > 0 && (
+              {(download.status === 'downloading' || 
+                download.status === 'downloading_video' || 
+                download.status === 'downloading_audio' || 
+                download.status === 'merging') && download.progress > 0 && (
                 <div className="w-full bg-[var(--box-toggle)] rounded-full h-2 mt-2">
                   <div
                     className="bg-[var(--select)] h-2 rounded-full transition-all duration-300"
@@ -67,38 +81,58 @@ export default function DownloadList({ downloads, onRemove, onUpdate }) {
                 </div>
               )}
 
-              {/* Status and Speed */}
+              {/* Status and Progress Info */}
               <div className="flex justify-between items-center mt-2">
                 <span className={`text-sm ${getStatusColor(download.status)}`}>
                   {getStatusText(download)}
+                  {download.step && ` - ${download.step}`}
                 </span>
-                {download.speed && (
-                  <span className="text-sm text-gray-400">
-                    Speed: {download.speed}
+                {download.speed && download.speed !== '0 B/s' && (
+                  <span className="text-xs text-gray-400">
+                    {download.speed}
                   </span>
                 )}
               </div>
+              
+              {/* Additional Info: Size and ETA */}
+              {(download.size || download.eta) && (
+                <div className="flex justify-between items-center mt-1">
+                  {download.size && download.size !== '0 B' && (
+                    <span className="text-xs text-gray-500">
+                      Size: {download.size}
+                    </span>
+                  )}
+                  {download.eta && download.eta !== '00:00' && (
+                    <span className="text-xs text-gray-500">
+                      ETA: {download.eta}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Remove Button */}
-            <button
-              onClick={() => onRemove(download.id)}
-              className="flex-shrink-0 p-2 text-gray-400 hover:text-red-400 transition-colors duration-200"
-              title="Remove download"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            {/* Action Buttons */}
+            <div className="flex-shrink-0">
+              {/* Remove Button */}
+              <button
+                onClick={() => onRemove(download.id)}
+                className="p-2 text-gray-400 hover:text-red-400 transition-colors duration-200"
+                title="Remove download"
               >
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
         ))}
       </div>

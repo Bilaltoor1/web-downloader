@@ -42,62 +42,80 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
     setSelectedAudioFormat(defaultAudio.id);
   }, []);
 
-  // Handle download with browser's download functionality
+  // Handle download with progress tracking and video+audio merging
   const handleDownload = async (type) => {
-    // Get the format ID for the selected format
-    let formatId = 'best';
+    // Get the format IDs for the selected formats
+    let videoFormatId = null;
+    let audioFormatId = null;
     
-    if (type === 'video' && selectedVideoFormat) {
-      // Check if we have processed formats from the API
+    let serverType = type;
+    if (type === 'video') {
+      // Determine video/audio format IDs; handle compound ids like "137+140"
+      let vId = selectedVideoFormat || '';
+      let aIdForVideo = null;
+
       if (videoInfo.formats && videoInfo.formats.videoFormats) {
-        const selectedFormat = videoInfo.formats.videoFormats.find(f => 
-          f.id === selectedVideoFormat
-        );
-        if (selectedFormat) {
-          formatId = selectedFormat.id;
-        }
-      } else {
-        // Fallback to the selected format ID directly
-        formatId = selectedVideoFormat;
+        const selectedFormat = videoInfo.formats.videoFormats.find(f => f.id === vId);
+        vId = selectedFormat ? selectedFormat.id : vId;
       }
-    } else if (type === 'audio' && selectedAudioFormat) {
-      // Check if we have processed formats from the API
-      if (videoInfo.formats && videoInfo.formats.audioFormats) {
-        const selectedFormat = videoInfo.formats.audioFormats.find(f => 
-          f.id === selectedAudioFormat
-        );
-        if (selectedFormat) {
-          formatId = selectedFormat.id;
+
+      if (vId.includes('+')) {
+        const [v, a] = vId.split('+');
+        vId = v;
+        aIdForVideo = a;
+      }
+
+      if (selectedAudioForVideo && selectedAudioForVideo !== 'none') {
+        aIdForVideo = selectedAudioForVideo;
+      }
+
+      videoFormatId = vId || null;
+      audioFormatId = aIdForVideo || null;
+
+      // If we have an audio format alongside video, request a merge on the server
+      serverType = audioFormatId ? 'video+audio' : 'video';
+    } else if (type === 'audio') {
+      // Get audio format
+      if (selectedAudioFormat) {
+        if (videoInfo.formats && videoInfo.formats.audioFormats) {
+          const selectedFormat = videoInfo.formats.audioFormats.find(f => 
+            f.id === selectedAudioFormat
+          );
+          audioFormatId = selectedFormat ? selectedFormat.id : selectedAudioFormat;
+        } else {
+          audioFormatId = selectedAudioFormat === 'bestaudio' ? 'bestaudio' : selectedAudioFormat;
         }
-      } else if (selectedAudioFormat === 'bestaudio') {
-        formatId = 'bestaudio';
-      } else {
-        // Fallback to the selected format ID directly
-        formatId = selectedAudioFormat;
       }
     }
     
-    console.log('Downloading with format:', formatId);
+    console.log('Downloading with formats:', { videoFormatId, audioFormatId, type });
 
     const downloadId = onDownload({
       title: videoInfo.title,
-      type: type,
+  type: serverType,
       thumbnail: videoInfo.thumbnail,
-      formatId: formatId,
+      videoFormatId: videoFormatId,
+      audioFormatId: audioFormatId,
+      progress: 0,
+      speed: '0 B/s',
+      size: '0 B',
+      eta: '00:00',
+      status: 'starting'
     });
 
-    // Start download process
+    // Start download process with progress tracking
     try {
-      // Get download URL from API
-      const response = await fetch('/api/download', {
+      // Initiate download with progress API
+      const response = await fetch('/api/download-progress', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           url: videoInfo.url,
-          formatId: formatId,
-          type: type,
+          videoFormatId: videoFormatId,
+          audioFormatId: audioFormatId,
+          type: serverType,
         }),
       });
 
@@ -106,39 +124,99 @@ export default function VideoInfo({ videoInfo, onDownload, onUpdateDownload }) {
         throw new Error(errorData.error || 'Download failed');
       }
 
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
+      const { downloadId: serverDownloadId } = await response.json();
+      console.log('Received server download ID:', serverDownloadId);
       
-      // Create temporary link and trigger download
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      
-      // Try to get filename from response headers
-      const contentDisposition = response.headers.get('content-disposition');
-      let filename = `${videoInfo.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.mp4`;
-      
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
-        if (filenameMatch) {
-          filename = filenameMatch[1];
-        }
-      }
-      
-      link.download = filename;
-      console.log('Downloading file:', filename);
-      
-      // Trigger download
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Clean up
-      window.URL.revokeObjectURL(downloadUrl);
-      
+      // Update download with server download ID
       onUpdateDownload(downloadId, {
-        status: 'completed',
-        progress: 100,
+        serverDownloadId: serverDownloadId,
+        status: 'downloading'
       });
+      
+      // Start polling for progress
+      const progressInterval = setInterval(async () => {
+        try {
+          const progressResponse = await fetch(`/api/download-progress?id=${serverDownloadId}`);
+          
+          if (progressResponse.ok) {
+            const progressData = await progressResponse.json();
+            
+            onUpdateDownload(downloadId, {
+              status: progressData.status,
+              progress: progressData.progress,
+              speed: progressData.speed,
+              size: progressData.size,
+              eta: progressData.eta,
+              step: progressData.step || '',
+              readyForSave: progressData.readyForSave,
+              filename: progressData.filename
+            });
+            
+            // If download is completed, automatically trigger file download dialog
+            if (progressData.status === 'completed' && progressData.readyForSave) {
+              clearInterval(progressInterval);
+              
+              console.log('Download completed, triggering file download for ID:', serverDownloadId);
+              
+              try {
+                // Small delay to ensure download state is fully updated
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // Trigger browser download dialog with simple retries (handles cold starts/HMR)
+                console.log('Making download-file request to:', `/api/download-file?id=${serverDownloadId}`);
+                let fileResponse = await fetch(`/api/download-file?id=${serverDownloadId}`);
+                let attempts = 0;
+                while (!fileResponse.ok && attempts < 3) {
+                  const text = await fileResponse.text().catch(() => '');
+                  console.warn(`download-file attempt ${attempts + 1} failed (${fileResponse.status}). Body:`, text);
+                  await new Promise(r => setTimeout(r, 500));
+                  attempts += 1;
+                  fileResponse = await fetch(`/api/download-file?id=${serverDownloadId}`);
+                }
+
+                if (fileResponse.ok) {
+                  const blob = await fileResponse.blob();
+                  const downloadUrl = window.URL.createObjectURL(blob);
+                  
+                  // Create temporary link and trigger download
+                  const link = document.createElement('a');
+                  link.href = downloadUrl;
+                  link.download = progressData.filename || `download.${type === 'audio' ? 'mp3' : 'mp4'}`;
+                  
+                  console.log('Auto-triggering download for:', link.download);
+                  
+                  // Trigger download dialog
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  
+                  // Clean up
+                  window.URL.revokeObjectURL(downloadUrl);
+                  
+                  onUpdateDownload(downloadId, {
+                    status: 'saved',
+                    currentFile: 'File saved to downloads folder'
+                  });
+                } else {
+                  throw new Error('Failed to download file');
+                }
+              } catch (error) {
+                console.error('Error auto-downloading file:', error);
+                onUpdateDownload(downloadId, {
+                  status: 'error',
+                  error: 'Failed to download file: ' + error.message
+                });
+              }
+            } else if (progressData.status === 'error') {
+              clearInterval(progressInterval);
+              throw new Error(progressData.error || 'Download failed');
+            }
+          }
+        } catch (progressError) {
+          console.error('Progress polling error:', progressError);
+        }
+      }, 1000); // Poll every second
+      
     } catch (error) {
       onUpdateDownload(downloadId, {
         status: 'error',
